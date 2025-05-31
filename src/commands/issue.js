@@ -1,78 +1,11 @@
-// For blacklists, show categories
-                if (selectedType === 'blacklists' || selectedType === 'blacklist') {
-                    const categories = await getBlacklistCategories();
-                    const filtered = Object.keys(categories)
-                        .filter(cat => cat.toLowerCase().includes(focusedOption.value.toLowerCase()))
-                        .slice(0, 25);
-                    
-                    await interaction.respond(
-                        filtered.map(cat => ({ 
-                            name: `Category: ${cat}`, 
-                            value: `category:${cat}` 
-                        }))
-                    );
-                } 
-                // For suspensions, strikes, demotions - show tiers
-                else if (['suspensions', 'suspension', 'strikes', 'strike', 'demotions', 'demotion'].includes(selectedType)) {
-                    const tiersSnapshot = await db.collection('punishment_tiers')
-                        .where('type_uuid', '==', typeUuid)
-                        .get();
-                    
-                    const tiers = [];
-                    tiersSnapshot.forEach(doc => {
-                        const data = doc.data();
-                        let duration;
-                        
-                        if (data.length === -1) {
-                            duration = 'Permanent';
-                        } else if (data.length === null) {
-                            duration = 'N/A';
-                        } else {
-                            // Format duration nicely
-                            const days = data.length;
-                            if (days % 365 === 0 && days >= 365) {
-                                const years = days / 365;
-                                duration = years === 1 ? '1 year' : `${years} years`;
-                            } else if (days % 30 === 0 && days >= 30) {
-                                const months = days / 30;
-                                duration = months === 1 ? '1 month' : `${months} months`;
-                            } else if (days % 7 === 0 && days >= 7) {
-                                const weeks = days / 7;
-                                duration = weeks === 1 ? '1 week' : `${weeks} weeks`;
-                            } else {
-                                duration = days === 1 ? '1 day' : `${days} days`;
-                            }
-                        }
-                        
-                        tiers.push({
-                            tier: data.punishment_tier,
-                            display: `Tier ${data.punishment_tier} (${duration})`
-                        });
-                    });
-                    
-                    // Sort by tier number
-                    tiers.sort((a, b) => a.tier - b.tier);
-                    
-                    // Filter based on input
-                    const filtered = tiers
-                        .filter(t => t.display.toLowerCase().includes(focusedOption.value.toLowerCase()))
-                        .slice(0, 25);
-                    
-                    await interaction.respond(
-                        filtered.map(t => ({ 
-                            name: t.display, 
-                            value: `tier:${t.tier}` 
-                        }))
-                    );
-                } 
-                // For// src/commands/issue.js
+// src/commands/issue.js
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { getDb, getAdmin } = require('../../config/firebase');
 const { getRobloxId } = require('../utils/roblox');
 const { getPunishmentTypes, getBlacklistCategories, getNextPunishmentId } = require('../utils/punishmentTypes');
 const { calculateEndDate } = require('../utils/firebase');
 
-module.exports = {
+const issueCommand = {
     data: new SlashCommandBuilder()
         .setName('issue')
         .setDescription('Issue a punishment to a user')
@@ -159,9 +92,29 @@ module.exports = {
                     const tiers = [];
                     tiersSnapshot.forEach(doc => {
                         const data = doc.data();
-                        const duration = data.length === -1 ? 'Permanent' : 
-                                       data.length === null ? 'N/A' : 
-                                       `${data.length} days`;
+                        let duration;
+                        
+                        if (data.length === -1) {
+                            duration = 'Permanent';
+                        } else if (data.length === null) {
+                            duration = 'N/A';
+                        } else {
+                            // Format duration nicely
+                            const days = data.length;
+                            if (days % 365 === 0 && days >= 365) {
+                                const years = days / 365;
+                                duration = years === 1 ? '1 year' : `${years} years`;
+                            } else if (days % 30 === 0 && days >= 30) {
+                                const months = days / 30;
+                                duration = months === 1 ? '1 month' : `${months} months`;
+                            } else if (days % 7 === 0 && days >= 7) {
+                                const weeks = days / 7;
+                                duration = weeks === 1 ? '1 week' : `${weeks} weeks`;
+                            } else {
+                                duration = days === 1 ? '1 day' : `${days} days`;
+                            }
+                        }
+                        
                         tiers.push({
                             tier: data.punishment_tier,
                             display: `Tier ${data.punishment_tier} (${duration})`
@@ -203,7 +156,7 @@ module.exports = {
         const admin = getAdmin();
         const username = interaction.options.getString('username');
         const punishmentType = interaction.options.getString('type');
-        const tierOrCategory = interaction.options.getString('tier_or_category');
+        const tierOrCategory = interaction.options.getString('tier');
         const reason = interaction.options.getString('reason') || 'No reason provided';
         const evidence = interaction.options.getString('evidence') || 'No evidence provided';
 
@@ -356,15 +309,23 @@ module.exports = {
 
         if ((punishmentType === 'blacklist' || punishmentType === 'blacklists') && category) {
             individualData.blacklist_category = category;
-        }
-
+        }  
+        let p = '';
+        const punishmentMap = {
+            'reminder': 'reminded',
+            'warning': 'warned',
+            'strike': 'striked',
+            'demotion': 'demoted',
+            'suspension': 'suspended',
+            'blacklist': 'blacklisted'
+        };
         await db.collection('individuals').doc(robloxId.toString()).set(individualData);
 
         // Create embed response
         const embed = new EmbedBuilder()
             .setColor(0xFF0000)
-            .setTitle('Punishment Issued')
-            .setDescription(`User **${username}** (ID: ${robloxId}) has been punished.`)
+            .setTitle(`${punishmentType ? punishmentType.charAt(0).toUpperCase() + punishmentType.slice(1) : 'Punished'} Issued`)
+            .setDescription(`User **${username}** (ID: ${robloxId}) has been ${punishmentMap[punishmentType] || punished}.`)
             .addFields(
                 { name: 'Record ID', value: punishmentRecordId.toString(), inline: true },
                 { name: 'Type', value: punishmentType, inline: true }
@@ -391,3 +352,6 @@ module.exports = {
         await interaction.editReply({ embeds: [embed] });
     }
 };
+
+// Export as default for ES module compatibility
+module.exports = issueCommand;

@@ -17,10 +17,11 @@ async function registerCommands() {
         try {
             const filePath = path.join(commandsPath, file);
             
-            // Clear require cache
-            delete require.cache[require.resolve(filePath)];
+            // Use dynamic import instead of require
+            const commandModule = await import(`file://${filePath}`);
             
-            const command = require(filePath);
+            // Handle both default and named exports
+            const command = commandModule.default || commandModule;
             
             // Skip if we've already seen this command
             if (seenCommands.has(command.data.name)) {
