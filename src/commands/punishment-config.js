@@ -68,6 +68,39 @@ module.exports = {
                 .addStringOption(option =>
                     option.setName('type_name')
                         .setDescription('Name of the punishment type')
+                        .setRequired(true)))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('list-all')
+                .setDescription('List all punishment types and their tiers in a tree view'))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('set-stacking')
+                .setDescription('Configure stacking settings for a punishment type')
+                .addStringOption(option =>
+                    option.setName('type_name')
+                        .setDescription('Name of the punishment type')
+                        .setRequired(true))
+                .addBooleanOption(option =>
+                    option.setName('stack')
+                        .setDescription('Whether this punishment type can stack')
+                        .setRequired(true))
+                .addIntegerOption(option =>
+                    option.setName('stackmax')
+                        .setDescription('Maximum stack count (-1 for unlimited)')
+                        .setRequired(true)
+                        .setMinValue(-1)))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('set-nonconcurrency')
+                .setDescription('Set which punishment types cannot coexist with this one')
+                .addStringOption(option =>
+                    option.setName('type_name')
+                        .setDescription('Name of the punishment type')
+                        .setRequired(true))
+                .addStringOption(option =>
+                    option.setName('nonconcurrent_types')
+                        .setDescription('Comma-separated type names (or "none" for no restrictions)')
                         .setRequired(true))),
 
     async execute(interaction) {
@@ -92,6 +125,15 @@ module.exports = {
                 break;
             case 'list-tiers':
                 await handleListTiers(interaction, db);
+                break;
+            case 'list-all':
+                await handleListAll(interaction, db);
+                break;
+            case 'set-stacking':
+                await handleSetStacking(interaction, db);
+                break;
+            case 'set-nonconcurrency':
+                await handleSetNonconcurrency(interaction, db);
                 break;
         }
     }
@@ -398,6 +440,311 @@ async function handleListTiers(interaction, db) {
     });
 
     embed.addFields({ name: 'Tiers', value: tiers.join('\n') });
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleListAll(interaction, db) {
+    await interaction.deferReply();
+
+    // Get all punishment types
+    const typesSnapshot = await db.collection('punishment_types').get();
+    
+    if (typesSnapshot.empty) {
+        await interaction.editReply('No punishment types configured.');
+        return;
+    }
+
+    // Create a map of types
+    const typesMap = new Map();
+    typesSnapshot.forEach(doc => {
+        const data = doc.data();
+        typesMap.set(data.type_uuid, {
+            name: data.punishment_type,
+            uuid: data.type_uuid,
+            stack: data.stack,
+            stackmax: data.stackmax,
+            nonconcurrency: data.nonconcurrency || [],
+            tiers: []
+        });
+    });
+
+    // Get all tiers and organize by type
+    const tiersSnapshot = await db.collection('punishment_tiers').get();
+    
+    tiersSnapshot.forEach(doc => {
+        const tierData = doc.data();
+        const typeInfo = typesMap.get(tierData.type_uuid);
+        
+        if (typeInfo) {
+            let duration;
+            if (tierData.length === -1) {
+                duration = 'Permanent';
+            } else if (tierData.length === null) {
+                duration = 'N/A';
+            } else {
+                // Format duration nicely
+                const days = tierData.length;
+                if (days % 365 === 0 && days >= 365) {
+                    const years = days / 365;
+                    duration = years === 1 ? '1 year' : `${years} years`;
+                } else if (days % 30 === 0 && days >= 30) {
+                    const months = days / 30;
+                    duration = months === 1 ? '1 month' : `${months} months`;
+                } else if (days % 7 === 0 && days >= 7) {
+                    const weeks = days / 7;
+                    duration = weeks === 1 ? '1 week' : `${weeks} weeks`;
+                } else {
+                    duration = days === 1 ? '1 day' : `${days} days`;
+                }
+            }
+
+            typeInfo.tiers.push({
+                number: tierData.punishment_tier,
+                uuid: tierData.tier_uuid,
+                duration: duration,
+                category: tierData.category || null
+            });
+        }
+    });
+
+    // Sort types by UUID (numerical order)
+    const sortedTypes = Array.from(typesMap.values()).sort((a, b) => 
+        a.uuid - b.uuid
+    );
+
+    // Sort tiers within each type
+    sortedTypes.forEach(type => {
+        type.tiers.sort((a, b) => a.number - b.number);
+    });
+
+    // Create embed
+    const embed = new EmbedBuilder()
+        .setColor(0x0099FF)
+        .setTitle('🌳 Punishment Configuration Overview')
+        .setDescription('Complete hierarchy of all punishment types and tiers')
+        .setTimestamp();
+
+    // Count statistics
+    const totalTypes = sortedTypes.length;
+    const totalTiers = sortedTypes.reduce((sum, type) => sum + type.tiers.length, 0);
+    
+    embed.addFields({
+        name: '📊 Statistics',
+        value: `Total Types: **${totalTypes}**\nTotal Tiers: **${totalTiers}**`,
+        inline: false
+    });
+
+    // Build tree view
+    let treeView = '';
+    
+    for (const type of sortedTypes) {
+        // Type header with stacking info
+        treeView += `\n**${type.name.toUpperCase()}** (UUID: ${type.uuid})`;
+        
+        // Add stacking indicators
+        const stackInfo = [];
+        if (type.stack !== undefined) {
+            if (type.stack) {
+                const maxText = type.stackmax === -1 ? '∞' : type.stackmax;
+                stackInfo.push(`📚 Stackable (Max: ${maxText})`);
+            } else {
+                stackInfo.push('📑 Non-stackable');
+            }
+        }
+        
+        if (type.nonconcurrency && type.nonconcurrency.length > 0) {
+            // Get names of non-concurrent types
+            const nonConcurrentNames = type.nonconcurrency.map(uuid => {
+                const ncType = typesMap.get(uuid);
+                return ncType ? ncType.name : `UUID:${uuid}`;
+            }).join(', ');
+            stackInfo.push(`🚫 Conflicts with: ${nonConcurrentNames}`);
+        }
+        
+        if (stackInfo.length > 0) {
+            treeView += '\n' + stackInfo.map(info => `  ${info}`).join('\n');
+        }
+        
+        treeView += '\n';
+        
+        if (type.tiers.length === 0) {
+            treeView += '└── *No tiers configured*\n';
+        } else {
+            // Add each tier
+            type.tiers.forEach((tier, index) => {
+                const isLast = index === type.tiers.length - 1;
+                const prefix = isLast ? '└──' : '├──';
+                
+                let tierLine = `${prefix} [UUID: ${tier.uuid}] Tier ${tier.number} (${tier.duration})`;
+                
+                // Add category for blacklists
+                if (tier.category) {
+                    tierLine += ` - ${tier.category}`;
+                }
+                
+                treeView += tierLine + '\n';
+            });
+        }
+    }
+
+    // Split into multiple fields if needed (Discord has 1024 char limit per field)
+    const chunks = [];
+    let currentChunk = '';
+    const lines = treeView.split('\n');
+    
+    for (const line of lines) {
+        if ((currentChunk + line + '\n').length > 1000) {
+            chunks.push(currentChunk);
+            currentChunk = line + '\n';
+        } else {
+            currentChunk += line + '\n';
+        }
+    }
+    
+    if (currentChunk) {
+        chunks.push(currentChunk);
+    }
+
+    // Add fields to embed
+    chunks.forEach((chunk, index) => {
+        embed.addFields({
+            name: chunks.length > 1 ? `Configuration Tree (Part ${index + 1})` : 'Configuration Tree',
+            value: chunk || 'Empty',
+            inline: false
+        });
+    });
+
+    // Add help footer
+    embed.setFooter({ 
+        text: 'Use /punishment-config commands to modify types and tiers' 
+    });
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleSetStacking(interaction, db) {
+    await interaction.deferReply();
+
+    const typeName = interaction.options.getString('type_name').toLowerCase();
+    const stack = interaction.options.getBoolean('stack');
+    const stackmax = interaction.options.getInteger('stackmax');
+
+    // Validate stackmax
+    if (stack && (stackmax === 0 || stackmax === 1)) {
+        await interaction.editReply('⚠️ Warning: Setting stackmax to 0 or 1 with stack=true is not recommended. Consider setting stack to false instead.');
+        return;
+    }
+
+    // Find the punishment type
+    const typesSnapshot = await db.collection('punishment_types').get();
+    let typeDoc = null;
+    
+    typesSnapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.punishment_type === typeName) {
+            typeDoc = doc;
+        }
+    });
+
+    if (!typeDoc) {
+        await interaction.editReply(`Punishment type "${typeName}" not found.`);
+        return;
+    }
+
+    // Update the stacking configuration
+    await typeDoc.ref.update({
+        stack: stack,
+        stackmax: stackmax
+    });
+
+    // Clear cache
+    clearCache();
+
+    const embed = new EmbedBuilder()
+        .setColor(0x00FF00)
+        .setTitle('Stacking Configuration Updated')
+        .setDescription(`Updated stacking settings for **${typeName}**`)
+        .addFields(
+            { name: 'Stackable', value: stack ? '✅ Yes' : '❌ No', inline: true },
+            { name: 'Max Stack', value: stackmax === -1 ? '∞ (Unlimited)' : stackmax.toString(), inline: true }
+        )
+        .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleSetNonconcurrency(interaction, db) {
+    await interaction.deferReply();
+
+    const typeName = interaction.options.getString('type_name').toLowerCase();
+    const nonconcurrentInput = interaction.options.getString('nonconcurrent_types').toLowerCase();
+
+    // Find the punishment type
+    const typesSnapshot = await db.collection('punishment_types').get();
+    let typeDoc = null;
+    const typeMap = new Map();
+    
+    typesSnapshot.forEach(doc => {
+        const data = doc.data();
+        typeMap.set(data.punishment_type, data.type_uuid);
+        if (data.punishment_type === typeName) {
+            typeDoc = doc;
+        }
+    });
+
+    if (!typeDoc) {
+        await interaction.editReply(`Punishment type "${typeName}" not found.`);
+        return;
+    }
+
+    // Parse non-concurrent types
+    let nonconcurrencyUuids = [];
+    
+    if (nonconcurrentInput !== 'none' && nonconcurrentInput !== '') {
+        const typeNames = nonconcurrentInput.split(',').map(t => t.trim());
+        
+        for (const ncTypeName of typeNames) {
+            const uuid = typeMap.get(ncTypeName);
+            if (!uuid) {
+                await interaction.editReply(`❌ Error: Punishment type "${ncTypeName}" not found.`);
+                return;
+            }
+            nonconcurrencyUuids.push(uuid);
+        }
+    }
+
+    // Update the non-concurrency configuration
+    await typeDoc.ref.update({
+        nonconcurrency: nonconcurrencyUuids
+    });
+
+    // Clear cache
+    clearCache();
+
+    const embed = new EmbedBuilder()
+        .setColor(0x00FF00)
+        .setTitle('Non-Concurrency Configuration Updated')
+        .setDescription(`Updated non-concurrency settings for **${typeName}**`);
+
+    if (nonconcurrencyUuids.length === 0) {
+        embed.addFields({ 
+            name: 'Conflicts With', 
+            value: 'None - Can coexist with all punishment types' 
+        });
+    } else {
+        const conflictNames = nonconcurrencyUuids.map(uuid => {
+            const type = Array.from(typeMap.entries()).find(([_, u]) => u === uuid);
+            return type ? type[0] : `UUID:${uuid}`;
+        });
+        
+        embed.addFields({ 
+            name: 'Conflicts With', 
+            value: conflictNames.join(', ') 
+        });
+    }
+
+    embed.setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
 }

@@ -1,7 +1,7 @@
 // src/commands/get.js
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { getDb } = require('../../config/firebase');
-const { getRobloxId, getRobloxUsername } = require('../utils/roblox');
+const { getRobloxId, getRobloxUsername, getRobloxAvatar } = require('../utils/roblox');
 const { getIndividualByRecordId } = require('../utils/firebase');
 
 module.exports = {
@@ -56,17 +56,35 @@ module.exports = {
             const userDoc = await db.collection('individuals').doc(robloxId.toString()).get();
             
             if (!userDoc.exists) {
-                await interaction.editReply(`No punishment records found for user **${username}**.`);
-                return;
+                // Check if user has any punishment records (for future multi-record support)
+                const punishmentsSnapshot = await db.collection('punishments')
+                    .where('roblox_id', '==', robloxId)
+                    .where('is_active', '==', true)
+                    .orderBy('created_on', 'desc')
+                    .limit(1)
+                    .get();
+                
+                if (punishmentsSnapshot.empty) {
+                    await interaction.editReply(`No punishment records found for user **${username}**.`);
+                    return;
+                }
+                
+                // Use the most recent punishment
+                individualData = punishmentsSnapshot.docs[0].data();
+                individualDocId = punishmentsSnapshot.docs[0].id;
+            } else {
+                individualData = userDoc.data();
+                individualDocId = userDoc.id;
             }
-
-            individualData = userDoc.data();
-            individualDocId = userDoc.id;
+            
             displayUsername = username;
         }
 
         // Check if punishment is inactive/removed
         if (individualData.is_active === false) {
+            // Get avatar URL
+            const avatarUrl = await getRobloxAvatar(individualData.roblox_id);
+            
             // Show only basic details for inactive punishments
             const embed = new EmbedBuilder()
                 .setColor(0x808080) // Gray color for inactive
@@ -79,6 +97,10 @@ module.exports = {
                 )
                 .setTimestamp();
 
+            if (avatarUrl) {
+                embed.setThumbnail(avatarUrl);
+            }
+
             await interaction.editReply({ embeds: [embed] });
             return;
         }
@@ -90,6 +112,9 @@ module.exports = {
             tierData = tierDoc.exists ? tierDoc.data() : null;
         }
 
+        // Get avatar URL
+        const avatarUrl = await getRobloxAvatar(individualData.roblox_id);
+
         // Create embed for active punishments
         const embed = new EmbedBuilder()
             .setColor(0x0099FF)
@@ -99,6 +124,10 @@ module.exports = {
                 { name: 'Current Status', value: '✅ Active', inline: true },
                 { name: 'Punishment Type', value: individualData.punishment_type, inline: true }
             );
+
+        if (avatarUrl) {
+            embed.setThumbnail(avatarUrl);
+        }
 
         if (individualData.punishment_type === 'blacklists' && individualData.blacklist_category) {
             embed.addFields({ name: 'Blacklist Category', value: individualData.blacklist_category, inline: true });
@@ -126,10 +155,69 @@ module.exports = {
         embed.addFields(
             { name: 'Created On', value: createdDate.toLocaleDateString(), inline: true },
             { name: 'Latest Reason', value: individualData.reason },
-            { name: 'Latest Evidence', value: individualData.evidence || 'No evidence provided' },
-            { name: 'Punishment History', value: individualData.punishment_history || 'No history' }
-        )
-        .setTimestamp();
+            { name: 'Latest Evidence', value: individualData.evidence || 'No evidence provided' }
+        );
+
+        // Check for other active punishments (when using the new punishments collection)
+        if (db.collection('punishments')) {
+            try {
+                const otherPunishmentsSnapshot = await db.collection('punishments')
+                    .where('roblox_id', '==', individualData.roblox_id)
+                    .where('is_active', '==', true)
+                    .get();
+                
+                // Filter out the current punishment
+                const otherPunishments = [];
+                otherPunishmentsSnapshot.forEach(doc => {
+                    const data = doc.data();
+                    if (data.punishment_record_id !== individualData.punishment_record_id) {
+                        otherPunishments.push(data);
+                    }
+                });
+                
+                if (otherPunishments.length > 0) {
+                    let otherPunishmentsText = '';
+                    
+                    for (const punishment of otherPunishments) {
+                        let entry = `• **#${punishment.punishment_record_id}** - ${punishment.punishment_type}`;
+                        
+                        if (punishment.current_tier) {
+                            entry += ` (Tier ${punishment.current_tier})`;
+                        } else if (punishment.blacklist_category) {
+                            entry += ` (${punishment.blacklist_category})`;
+                        }
+                        
+                        const reasonText = punishment.reason || 'No reason provided';
+                        const reasonPreview = reasonText.length > 50 
+                            ? reasonText.substring(0, 47) + '...' 
+                            : reasonText;
+                        
+                        entry += `\n  └─ ${reasonPreview}`;
+                        
+                        if (reasonText.length > 50) {
+                            entry += '\n     *Use `/get record_id:${punishment.punishment_record_id}` for full details*';
+                        }
+                        
+                        otherPunishmentsText += entry + '\n';
+                    }
+                    
+                    embed.addFields({ 
+                        name: '📋 Other Active Punishments', 
+                        value: otherPunishmentsText.trim() || 'None' 
+                    });
+                }
+            } catch (error) {
+                // If punishments collection doesn't exist yet, skip this section
+                console.log('Punishments collection not found, skipping other active punishments');
+            }
+        }
+
+        embed.addFields({ 
+            name: 'Punishment History', 
+            value: individualData.punishment_history || 'No history' 
+        });
+
+        embed.setTimestamp();
 
         await interaction.editReply({ embeds: [embed] });
     }

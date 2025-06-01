@@ -26,7 +26,25 @@ async function getRobloxUsername(userId) {
     }
 }
 
+async function getRobloxAvatar(userId) {
+    try {
+        // Get avatar thumbnail - headshot at 150x150
+        const response = await axios.get(
+            `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${userId}&size=150x150&format=Png&isCircular=false`
+        );
+        
+        if (response.data.data && response.data.data.length > 0) {
+            return response.data.data[0].imageUrl;
+        }
+        return null;
+    } catch (error) {
+        console.error('Error fetching Roblox avatar:', error);
+        return null;
+    }
+}
+
 module.exports = {
     getRobloxId,
-    getRobloxUsername
+    getRobloxUsername,
+    getRobloxAvatar
 };

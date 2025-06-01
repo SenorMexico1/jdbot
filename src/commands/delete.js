@@ -2,7 +2,7 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const { getDb } = require('../../config/firebase');
 const { doc, getDoc, deleteDoc } = require('firebase/firestore');
-const { getRobloxId } = require('../utils/roblox');
+const { getRobloxId, getRobloxAvatar, getRobloxUsername } = require('../utils/roblox');
 
 module.exports = {
     data: new SlashCommandBuilder()
