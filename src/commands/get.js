@@ -156,7 +156,7 @@ module.exports = {
 
             // Get avatar URL
             const avatarUrl = await getRobloxAvatar(individualData.roblox_id);
-
+            const punishmentFormatted = individualData.punishment_type ? individualData.punishment_type.charAt(0).toUpperCase() + individualData.punishment_type.slice(1) : 'Punished'
             // Create embed for active punishments
             const embed = new EmbedBuilder()
                 .setColor(0x0099FF)
@@ -164,7 +164,7 @@ module.exports = {
                 .setDescription(`**${displayUsername}** (Roblox ID: ${individualData.roblox_id})`)
                 .addFields(
                     { name: 'Current Status', value: '✅ Active', inline: true },
-                    { name: 'Punishment Type', value: individualData.punishment_type, inline: true }
+                    { name: 'Punishment', value: punishmentFormatted, inline: true }
                 );
 
             if (avatarUrl) {
@@ -174,10 +174,13 @@ module.exports = {
             if (individualData.punishment_type === 'blacklist' && individualData.blacklist_category) {
                 embed.addFields({ name: 'Blacklist Category', value: individualData.blacklist_category, inline: true });
             } else if (!['reminder', 'warning'].includes(individualData.punishment_type)) {
-                embed.addFields({ name: 'Current Tier', value: individualData.current_tier?.toString() || 'N/A', inline: true });
+                embed.addFields({ name: 'Tier', value: individualData.current_tier?.toString() || 'N/A', inline: true });
             }
 
-            // Add duration info
+            const createdDate = individualData.created_on.toDate ? individualData.created_on.toDate() : new Date(individualData.created_on);
+            embed.addFields(
+                { name: 'Date Issued', value: createdDate.toLocaleDateString(), inline: true });
+                        // Add duration info
             if (tierData) {
                 const duration = tierData.length === -1 ? 'Permanent' : tierData.length === null ? 'N/A' : `${tierData.length} days`;
                 embed.addFields({ name: 'Duration', value: duration, inline: true });
@@ -192,10 +195,7 @@ module.exports = {
                     });
                 }
             }
-
-            const createdDate = individualData.created_on.toDate ? individualData.created_on.toDate() : new Date(individualData.created_on);
-            embed.addFields(
-                { name: 'Created On', value: createdDate.toLocaleDateString(), inline: true },
+            embed.addFields(    
                 { name: 'Latest Reason', value: individualData.reason || 'No reason provided' },
                 { name: 'Latest Evidence', value: individualData.evidence || 'No evidence provided' }
             );
@@ -295,10 +295,10 @@ module.exports = {
                 const finalHistory = filteredHistory.length > 0 
                     ? filteredHistory.join('\n') 
                     : 'No previous punishments';
-                
+                const fmt = '```'
                 embed.addFields({ 
                     name: 'Punishment History', 
-                    value: finalHistory
+                    value: `${fmt}${finalHistory}${fmt}`
                 });
             } else {
                 embed.addFields({ 

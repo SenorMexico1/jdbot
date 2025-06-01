@@ -36,29 +36,36 @@ async function sendPunishmentNotification(interaction, action, punishmentData, u
         expire: 0xFFA500      // Orange
     };
     
+    // Capitalize punishment type
+    const capitalizedType = punishmentData.punishment_type.charAt(0).toUpperCase() + punishmentData.punishment_type.slice(1);
+    
+    // Generate action-specific titles
     const actionTitles = {
-        issue: 'Punishment Issued',
-        remove: 'Punishment Removed',
-        delete: 'Punishment Deleted',
-        update: 'Punishment Updated',
-        expire: 'Punishment Expired'
+        issue: `${capitalizedType} Issued`,
+        remove: `${capitalizedType} Removed`,
+        delete: `${capitalizedType} Deleted`,
+        update: `${capitalizedType} Updated`,
+        expire: `${capitalizedType} Expired`
     };
     
     const embed = new EmbedBuilder()
         .setColor(colors[action] || 0x0099FF)
         .setTitle(`📋 ${actionTitles[action] || 'Punishment Action'}`)
-        .setDescription(`Action performed by <@${interaction.user.id}>`)
+        .setDescription(`Action performed by <@${interaction.user.id}> (${interaction.user.username})`)
         .addFields(
             { name: 'User', value: `${userData.username || 'Unknown'} (ID: ${punishmentData.roblox_id})`, inline: true },
             { name: 'Record ID', value: `#${punishmentData.punishment_record_id}`, inline: true },
-            { name: 'Type', value: punishmentData.punishment_type, inline: true }
+            { name: 'Type', value: capitalizedType, inline: true }
         );
     
-    // Add tier/category info
+    // Add tier as a separate field if applicable
+    if (punishmentData.current_tier && !['reminder', 'warning'].includes(punishmentData.punishment_type)) {
+        embed.addFields({ name: 'Tier', value: punishmentData.current_tier.toString(), inline: true });
+    }
+    
+    // Add category for blacklists
     if (punishmentData.blacklist_category) {
         embed.addFields({ name: 'Category', value: punishmentData.blacklist_category, inline: true });
-    } else if (punishmentData.current_tier && !['reminder', 'warning'].includes(punishmentData.punishment_type)) {
-        embed.addFields({ name: 'Tier', value: punishmentData.current_tier.toString(), inline: true });
     }
     
     // Add reason if available
@@ -132,7 +139,8 @@ async function sendDailyRecap(client, expiredPunishments, stats = {}) {
             if (expiredPunishments.length > 0) {
                 let expiredText = '';
                 for (const punishment of expiredPunishments.slice(0, 10)) { // Limit to 10
-                    expiredText += `• **${punishment.username}** - #${punishment.recordId} (${punishment.type})\n`;
+                    const capitalizedType = punishment.type.charAt(0).toUpperCase() + punishment.type.slice(1);
+                    expiredText += `• **${punishment.username}** - #${punishment.recordId} (${capitalizedType})\n`;
                 }
                 
                 if (expiredPunishments.length > 10) {

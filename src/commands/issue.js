@@ -422,11 +422,11 @@ const issueCommand = {
 
         // Get avatar URL
         const avatarUrl = await getRobloxAvatar(robloxId);
-
+        const punishmentFormatted = punishmentType ? punishmentType.charAt(0).toUpperCase() + punishmentType.slice(1) : 'Punished'
         // Create embed response
         const embed = new EmbedBuilder()
             .setColor(0xFF0000)
-            .setTitle(`${punishmentType ? punishmentType.charAt(0).toUpperCase() + punishmentType.slice(1) : 'Punished'} Issued`)
+            .setTitle(`${punishmentFormatted} Issued`)
             .setDescription(`User **${username}** (ID: ${robloxId}) has been ${punishmentMap[punishmentType] || 'punished'}.`)
             .addFields(
                 { name: 'Record ID', value: punishmentRecordId.toString(), inline: true },
