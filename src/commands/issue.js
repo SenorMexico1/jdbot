@@ -217,129 +217,82 @@ const issueCommand = {
             return;
         }
 
-        // Check stacking rules
-        if (typeData.stack !== undefined) {
-            // First check the new punishments collection for all active punishments
+        // Check stacking rules using punishments collection
+        try {
+            const activePunishmentsSnapshot = await db.collection('punishments')
+                .where('roblox_id', '==', robloxId)
+                .where('is_active', '==', true)
+                .get();
+            
             let hasConflicts = false;
             let conflictingPunishment = null;
             
-            try {
-                const activePunishmentsSnapshot = await db.collection('punishments')
-                    .where('roblox_id', '==', robloxId)
-                    .where('is_active', '==', true)
+            for (const doc of activePunishmentsSnapshot.docs) {
+                const activePunishment = doc.data();
+                
+                // Check non-concurrency rules
+                if (typeData.nonconcurrency && typeData.nonconcurrency.length > 0) {
+                    const activePunishmentTypeUuid = punishmentTypes[activePunishment.punishment_type];
+                    
+                    if (typeData.nonconcurrency.includes(activePunishmentTypeUuid)) {
+                        hasConflicts = true;
+                        conflictingPunishment = activePunishment;
+                        break;
+                    }
+                }
+                
+                // Check if active punishment type has non-concurrency rules against this new type
+                const activeTypeDoc = await db.collection('punishment_types')
+                    .where('punishment_type', '==', activePunishment.punishment_type)
                     .get();
                 
-                for (const doc of activePunishmentsSnapshot.docs) {
-                    const activePunishment = doc.data();
-                    
-                    // Check non-concurrency rules
-                    if (typeData.nonconcurrency && typeData.nonconcurrency.length > 0) {
-                        const activePunishmentTypeUuid = punishmentTypes[activePunishment.punishment_type];
-                        
-                        if (typeData.nonconcurrency.includes(activePunishmentTypeUuid)) {
-                            hasConflicts = true;
-                            conflictingPunishment = activePunishment;
-                            break;
-                        }
-                    }
-                    
-                    // Check if active punishment type has non-concurrency rules against this new type
-                    const activeTypeDoc = await db.collection('punishment_types')
-                        .where('punishment_type', '==', activePunishment.punishment_type)
-                        .get();
-                    
-                    if (!activeTypeDoc.empty) {
-                        const activeTypeData = activeTypeDoc.docs[0].data();
-                        if (activeTypeData.nonconcurrency && activeTypeData.nonconcurrency.includes(typeUuid)) {
-                            hasConflicts = true;
-                            conflictingPunishment = activePunishment;
-                            break;
-                        }
-                    }
-                }
-                
-                if (hasConflicts && conflictingPunishment) {
-                    await interaction.editReply(
-                        `❌ Cannot issue ${punishmentType} - User has an active ${conflictingPunishment.punishment_type} (#${conflictingPunishment.punishment_record_id}) which conflicts with ${punishmentType}.`
-                    );
-                    return;
-                }
-                
-                // Check stacking for same type
-                if (!typeData.stack) {
-                    const samePunishmentType = activePunishmentsSnapshot.docs.find(doc => 
-                        doc.data().punishment_type === punishmentType
-                    );
-                    
-                    if (samePunishmentType) {
-                        const existingPunishment = samePunishmentType.data();
-                        await interaction.editReply(
-                            `❌ Cannot issue ${punishmentType} - User already has an active ${punishmentType} (#${existingPunishment.punishment_record_id}) and this type is non-stackable.`
-                        );
-                        return;
-                    }
-                }
-                
-                // Check stack max
-                if (typeData.stack && typeData.stackmax !== -1) {
-                    const activeCount = await countActiveTypeForUser(db, robloxId, punishmentType);
-                    
-                    if (activeCount >= typeData.stackmax) {
-                        await interaction.editReply(
-                            `❌ Cannot issue ${punishmentType} - User already has ${activeCount} active ${punishmentType}(s). Maximum allowed: ${typeData.stackmax}`
-                        );
-                        return;
-                    }
-                }
-                
-            } catch (error) {
-                // If punishments collection doesn't exist, fall back to old validation
-                console.log('Using legacy stacking validation');
-                
-                // Get all active punishments for this user (old structure)
-                const userDoc = await db.collection('individuals').doc(robloxId.toString()).get();
-                
-                if (userDoc.exists) {
-                    const userData = userDoc.data();
-                    
-                    // Check if user has active punishment
-                    if (userData.is_active !== false) {
-                        const currentTypeUuid = punishmentTypes[userData.punishment_type];
-                        
-                        // Check non-concurrency rules
-                        if (typeData.nonconcurrency && typeData.nonconcurrency.length > 0) {
-                            if (typeData.nonconcurrency.includes(currentTypeUuid)) {
-                                await interaction.editReply(
-                                    `❌ Cannot issue ${punishmentType} - User already has an active ${userData.punishment_type} which conflicts with ${punishmentType}.`
-                                );
-                                return;
-                            }
-                        }
-                        
-                        // Check if current punishment type also has non-concurrency rules
-                        const currentTypeDoc = await db.collection('punishment_types').doc(currentTypeUuid.toString()).get();
-                        if (currentTypeDoc.exists) {
-                            const currentTypeData = currentTypeDoc.data();
-                            if (currentTypeData.nonconcurrency && currentTypeData.nonconcurrency.includes(typeUuid)) {
-                                await interaction.editReply(
-                                    `❌ Cannot issue ${punishmentType} - User's active ${userData.punishment_type} cannot coexist with ${punishmentType}.`
-                                );
-                                return;
-                            }
-                        }
-                        
-                        // Check stacking for same type
-                        if (userData.punishment_type === punishmentType) {
-                            if (!typeData.stack) {
-                                await interaction.editReply(
-                                    `❌ Cannot issue ${punishmentType} - User already has an active ${punishmentType} and this type is non-stackable.`
-                                );
-                                return;
-                            }
-                        }
+                if (!activeTypeDoc.empty) {
+                    const activeTypeData = activeTypeDoc.docs[0].data();
+                    if (activeTypeData.nonconcurrency && activeTypeData.nonconcurrency.includes(typeUuid)) {
+                        hasConflicts = true;
+                        conflictingPunishment = activePunishment;
+                        break;
                     }
                 }
             }
+            
+            if (hasConflicts && conflictingPunishment) {
+                await interaction.editReply(
+                    `❌ Cannot issue ${punishmentType} - User has an active ${conflictingPunishment.punishment_type} (#${conflictingPunishment.punishment_record_id}) which conflicts with ${punishmentType}.`
+                );
+                return;
+            }
+            
+            // Check stacking for same type
+            if (!typeData.stack) {
+                const samePunishmentType = activePunishmentsSnapshot.docs.find(doc => 
+                    doc.data().punishment_type === punishmentType
+                );
+                
+                if (samePunishmentType) {
+                    const existingPunishment = samePunishmentType.data();
+                    await interaction.editReply(
+                        `❌ Cannot issue ${punishmentType} - User already has an active ${punishmentType} (#${existingPunishment.punishment_record_id}) and this type is non-stackable.`
+                    );
+                    return;
+                }
+            }
+            
+            // Check stack max
+            if (typeData.stack && typeData.stackmax !== -1) {
+                const activeCount = await countActiveTypeForUser(db, robloxId, punishmentType);
+                
+                if (activeCount >= typeData.stackmax) {
+                    await interaction.editReply(
+                        `❌ Cannot issue ${punishmentType} - User already has ${activeCount} active ${punishmentType}(s). Maximum allowed: ${typeData.stackmax}`
+                    );
+                    return;
+                }
+            }
+            
+        } catch (error) {
+            console.log('Punishments collection check error:', error);
+            // Continue without stacking validation if collection doesn't exist
         }
 
         let tierData;
@@ -393,18 +346,18 @@ const issueCommand = {
             }
         }
 
-        // Check if user already has a record
+        // Check if user already has a record to get punishment history
         const userDoc = await db.collection('individuals').doc(robloxId.toString()).get();
         let punishmentHistory = '';
-        let punishmentRecordId;
-
+        
         if (userDoc.exists) {
             const userData = userDoc.data();
             punishmentHistory = userData.punishment_history || '';
-            punishmentRecordId = userData.punishment_record_id;
-        } else {
-            punishmentRecordId = await getNextPunishmentId();
         }
+
+        // Always generate a new punishment record ID
+        const punishmentRecordId = await getNextPunishmentId();
+        console.log(`Generated punishment record ID: ${punishmentRecordId} for ${username}`);
 
         // Create punishment entry
         const now = new Date();
@@ -425,13 +378,12 @@ const issueCommand = {
             punishmentHistory = newHistoryEntry;
         }
 
-        // Save to Firebase - create in both collections for compatibility
-        const individualData = {
+        // Create punishment data
+        const punishmentData = {
             roblox_id: robloxId,
             created_on: admin.firestore.FieldValue.serverTimestamp(),
             evidence: evidence,
             reason: reason,
-            punishment_history: punishmentHistory,
             punishment_type: punishmentType,
             punishment_record_id: punishmentRecordId,
             current_tier: actualTier,
@@ -442,19 +394,23 @@ const issueCommand = {
         };
 
         if ((punishmentType === 'blacklist' || punishmentType === 'blacklists') && category) {
-            individualData.blacklist_category = category;
+            punishmentData.blacklist_category = category;
         }
 
-        // Save to individuals collection (legacy support)
-        await db.collection('individuals').doc(robloxId.toString()).set(individualData);
-        
-        // Also save to punishments collection for multiple punishments support
-        await db.collection('punishments').doc(punishmentRecordId.toString()).set({
-            ...individualData,
-            roblox_id: robloxId // Ensure it's stored as a number
-        });
+        // Save to punishments collection (primary storage for all punishments)
+        console.log(`Saving to punishments collection with doc ID: ${punishmentRecordId}`);
+        await db.collection('punishments').doc(punishmentRecordId.toString()).set(punishmentData);
 
-        let p = '';
+        // Update individuals collection with ONLY the latest active punishment and history
+        // This is for backward compatibility
+        const individualData = {
+            ...punishmentData,
+            punishment_history: punishmentHistory
+        };
+
+        console.log(`Updating individuals collection for user ${robloxId}`);
+        await db.collection('individuals').doc(robloxId.toString()).set(individualData);
+
         const punishmentMap = {
             'reminder': 'reminded',
             'warning': 'warned',

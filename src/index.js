@@ -4,6 +4,7 @@ const { initializeFirebase } = require('../config/firebase');
 const { initializePunishmentData } = require('./utils/firebase');
 const { registerCommands, getCommands } = require('./handlers/commandHandler');
 const { setupEventHandlers } = require('./handlers/eventHandler');
+const { scheduleJobs } = require('./jobs/checkExpiredPunishments');
 
 require('dotenv').config();
 
@@ -33,6 +34,8 @@ const client = new Client({
         
         // Login to Discord
         await client.login(process.env.DISCORD_TOKEN);
+
+        scheduleJobs(client); // Add this
     } catch (error) {
         console.error('Failed to start bot:', error);
         process.exit(1);
