@@ -1,90 +1,185 @@
-// src/commands/delete.js
+// src/commands/update.js
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
-const { getDb } = require('../../config/firebase');
-const { getRobloxId } = require('../utils/roblox');
+const { getDb, getAdmin } = require('../../config/firebase');
+const { getRobloxUsername, getRobloxAvatar } = require('../utils/roblox');
+const { sendPunishmentNotification } = require('../utils/notifications');
 
 module.exports = {
     data: new SlashCommandBuilder()
-        .setName('delete')
-        .setDescription('Delete a user\'s punishment record without adding to history')
+        .setName('update')
+        .setDescription('Update a punishment record')
+        .addIntegerOption(option =>
+            option.setName('record_id')
+                .setDescription('Punishment record ID')
+                .setRequired(true))
         .addStringOption(option =>
-            option.setName('username')
-                .setDescription('Roblox username')
-                .setRequired(true)),
+            option.setName('reason')
+                .setDescription('New reason for the punishment')
+                .setRequired(false))
+        .addStringOption(option =>
+            option.setName('evidence')
+                .setDescription('New evidence URL')
+                .setRequired(false))
+        .addIntegerOption(option =>
+            option.setName('tier')
+                .setDescription('New tier (for applicable punishment types)')
+                .setRequired(false)
+                .setMinValue(1)),
 
     async execute(interaction) {
         await interaction.deferReply();
 
         const db = getDb();
-        const username = interaction.options.getString('username');
+        const admin = getAdmin();
+        const recordId = interaction.options.getInteger('record_id');
+        const newReason = interaction.options.getString('reason');
+        const newEvidence = interaction.options.getString('evidence');
+        const newTier = interaction.options.getInteger('tier');
         
-        // Get Roblox ID
-        const robloxId = await getRobloxId(username);
-        if (!robloxId) {
-            await interaction.editReply('Could not find Roblox user with that username.');
-            return;
-        }
+        try {
+            // Get the punishment record
+            const punishmentRef = db.collection('punishments').doc(recordId.toString());
+            const punishmentDoc = await punishmentRef.get();
+            
+            if (!punishmentDoc.exists) {
+                await interaction.editReply(`No punishment record found with ID **#${recordId}**.`);
+                return;
+            }
+            
+            const originalData = punishmentDoc.data();
+            const robloxId = originalData.roblox_id;
+            const username = await getRobloxUsername(robloxId);
+            const avatarUrl = await getRobloxAvatar(robloxId);
+            
+            // Track changes
+            const changes = [];
+            const updateData = {
+                last_updated: admin.firestore.FieldValue.serverTimestamp(),
+                last_updated_by: interaction.user.id
+            };
+            
+            // Update reason
+            if (newReason) {
+                updateData.reason = newReason;
+                changes.push(`Reason: ${originalData.reason || 'None'} → ${newReason}`);
+            }
+            
+            // Update evidence
+            if (newEvidence) {
+                updateData.evidence = newEvidence;
+                changes.push(`Evidence: ${originalData.evidence || 'None'} → ${newEvidence}`);
+            }
+            
+            // Update tier (if applicable)
+            if (newTier && !['reminder', 'warning', 'blacklist'].includes(originalData.punishment_type)) {
+                // Verify tier exists
+                const tierSnapshot = await db.collection('punishment_tiers')
+                    .where('type_uuid', '==', originalData.type_uuid || 0)
+                    .where('punishment_tier', '==', newTier)
+                    .get();
+                
+                if (tierSnapshot.empty) {
+                    await interaction.editReply(`Invalid tier ${newTier} for punishment type ${originalData.punishment_type}.`);
+                    return;
+                }
+                
+                const tierData = tierSnapshot.docs[0].data();
+                updateData.current_tier = newTier;
+                updateData.tier_uuid = tierData.tier_uuid;
+                
+                // Update end date based on new tier
+                if (tierData.length && tierData.length > 0) {
+                    const startDate = originalData.punishment_start_date?.toDate ? 
+                        originalData.punishment_start_date.toDate() : 
+                        new Date(originalData.punishment_start_date);
+                    
+                    const newEndDate = new Date(startDate);
+                    newEndDate.setDate(newEndDate.getDate() + tierData.length);
+                    updateData.punishment_end_date = newEndDate;
+                }
+                
+                changes.push(`Tier: ${originalData.current_tier || 'None'} → ${newTier}`);
+            }
+            
+            if (changes.length === 0) {
+                await interaction.editReply('❌ No changes specified. Please provide at least one field to update.');
+                return;
+            }
+            
+            // Update punishment record
+            await punishmentRef.update(updateData);
+            
+            // Update individuals collection if this is the current punishment
+            const individualRef = db.collection('individuals').doc(robloxId.toString());
+            const individualDoc = await individualRef.get();
+            
+            if (individualDoc.exists) {
+                const individualData = individualDoc.data();
+                if (individualData.punishment_record_id === recordId) {
+                    await individualRef.update(updateData);
+                }
+                
+                // Add update to history
+                const now = new Date();
+                const formattedDate = `${now.getMonth() + 1}/${now.getDate()}/${now.getFullYear()}`;
+                const updateEntry = `• ${formattedDate} - UPDATED #${recordId} - ${changes.join(', ')}`;
+                
+                let punishmentHistory = individualData.punishment_history || '';
+                if (punishmentHistory) {
+                    punishmentHistory += `\n${updateEntry}`;
+                } else {
+                    punishmentHistory = updateEntry;
+                }
+                
+                await individualRef.update({ punishment_history: punishmentHistory });
+            }
+            
+            // Create response embed
+            const embed = new EmbedBuilder()
+                .setColor(0xFFFF00)
+                .setTitle('Punishment Updated')
+                .setDescription(`Updated punishment record **#${recordId}**`)
+                .addFields(
+                    { name: 'User', value: `${username} (ID: ${robloxId})`, inline: true },
+                    { name: 'Record ID', value: recordId.toString(), inline: true },
+                    { name: 'Punishment Type', value: originalData.punishment_type, inline: true },
+                    { name: 'Updated By', value: `<@${interaction.user.id}>`, inline: true }
+                );
 
-        // Get user data
-        const userRef = db.collection('individuals').doc(robloxId.toString());
-        const userDoc = await userRef.get();
-        
-        if (!userDoc.exists) {
-            await interaction.editReply(`No punishment records found for user **${username}**.`);
-            return;
-        }
+            if (avatarUrl) {
+                embed.setThumbnail(avatarUrl);
+            }
 
-        const userData = userDoc.data();
-        const recordId = userData.punishment_record_id;
+            // Show changes
+            embed.addFields({ 
+                name: '📝 Changes Made', 
+                value: changes.join('\n') 
+            });
 
-        // Get tier information if applicable
-        let tierData = null;
-        if (userData.tier_uuid) {
-            const tierDoc = await db.collection('punishment_tiers').doc(userData.tier_uuid.toString()).get();
-            tierData = tierDoc.exists ? tierDoc.data() : null;
-        }
-
-        // Delete the document entirely
-        await userRef.delete();
-
-        const embed = new EmbedBuilder()
-            .setColor(0xFF6B6B)
-            .setTitle('Punishment Record Deleted')
-            .setDescription(`Completely deleted punishment record for **${username}**`)
-            .addFields(
-                { name: 'Record ID', value: recordId.toString(), inline: true },
-                { name: 'Roblox ID', value: robloxId.toString(), inline: true },
-                { name: 'Punishment Type', value: userData.punishment_type, inline: true }
+            // Show current values
+            const updatedData = { ...originalData, ...updateData };
+            embed.addFields(
+                { name: 'Current Reason', value: updatedData.reason || 'No reason provided' },
+                { name: 'Current Evidence', value: updatedData.evidence || 'No evidence provided' }
             );
 
-        // Add tier/category info
-        if (userData.punishment_type === 'blacklists' && userData.blacklist_category) {
-            embed.addFields({ name: 'Category', value: userData.blacklist_category, inline: true });
-        } else if (!['reminders', 'warnings'].includes(userData.punishment_type) && userData.current_tier) {
-            embed.addFields({ name: 'Tier', value: userData.current_tier.toString(), inline: true });
+            if (updatedData.current_tier && !['reminder', 'warning'].includes(updatedData.punishment_type)) {
+                embed.addFields({ name: 'Current Tier', value: updatedData.current_tier.toString(), inline: true });
+            }
+
+            embed.setTimestamp();
+
+            await interaction.editReply({ embeds: [embed] });
+            
+            // Send notification
+            await sendPunishmentNotification(interaction, 'update', updatedData, { 
+                username, 
+                changes: changes.join('\n') 
+            });
+            
+        } catch (error) {
+            console.error('Error in update command:', error);
+            await interaction.editReply(`❌ Error updating punishment: ${error.message}`);
         }
-
-        // Add duration
-        if (tierData) {
-            const duration = tierData.length === -1 ? 'Permanent' : tierData.length === null ? 'N/A' : `${tierData.length} days`;
-            embed.addFields({ name: 'Duration', value: duration, inline: true });
-        }
-
-        const createdDate = userData.created_on.toDate ? userData.created_on.toDate() : new Date(userData.created_on);
-        embed.addFields(
-            { name: 'Deleted By', value: `<@${interaction.user.id}>`, inline: true },
-            { name: 'Reason', value: userData.reason || 'No reason provided' },
-            { name: 'Evidence', value: userData.evidence || 'No evidence provided' },
-            { name: 'Created On', value: createdDate.toLocaleDateString(), inline: true }
-        );
-
-        if (userData.punishment_history) {
-            embed.addFields({ name: 'Punishment History', value: userData.punishment_history });
-        }
-
-        embed.addFields({ name: '⚠️ Warning', value: 'This action cannot be undone. All data for this punishment record has been permanently deleted.' })
-            .setTimestamp();
-
-        await interaction.editReply({ embeds: [embed] });
     }
 };

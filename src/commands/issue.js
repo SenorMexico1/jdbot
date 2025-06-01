@@ -456,6 +456,10 @@ const issueCommand = {
         .setTimestamp();
 
         await interaction.editReply({ embeds: [embed] });
+        
+        // Send notification
+        const { sendPunishmentNotification } = require('../utils/notifications');
+        await sendPunishmentNotification(interaction, 'issue', punishmentData, { username });
     }
 };
 

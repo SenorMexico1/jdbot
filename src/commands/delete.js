@@ -137,6 +137,10 @@ module.exports = {
 
             await interaction.editReply({ embeds: [embed] });
             
+            // Send notification
+            const { sendPunishmentNotification } = require('../utils/notifications');
+            await sendPunishmentNotification(interaction, 'delete', punishmentData, { username });
+            
         } catch (error) {
             console.error('Error in delete command:', error);
             await interaction.editReply(`❌ Error deleting punishment: ${error.message}`);

@@ -34,8 +34,13 @@ const client = new Client({
         
         // Login to Discord
         await client.login(process.env.DISCORD_TOKEN);
-
-        scheduleJobs(client); // Add this
+        
+        // Wait for client to be ready before scheduling jobs
+        client.once('ready', () => {
+            console.log('Bot is ready! Scheduling jobs...');
+            scheduleJobs(client);
+        });
+        
     } catch (error) {
         console.error('Failed to start bot:', error);
         process.exit(1);
